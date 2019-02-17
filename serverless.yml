@@ -1,0 +1,196 @@
+service: redenvelope-manager
+
+custom:
+  serverless-offline:
+    port: 3001
+  sqs: red-envelope-${opt:stage}
+  table: red-envelope-${opt:stage}
+  region: eu-west-1
+  kmsKeyArn: arn:aws:kms:eu-west-1:929106972464:key/${env:KMS_KEY_ID}
+
+package:
+  exclude:
+    - src/**/*.test.js
+
+provider:
+  name: aws
+  region: eu-west-1
+  runtime: nodejs8.10
+  timeout: 30
+  iamManagedPolicies:
+    - arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+       - ssm:GetParameters
+       - ssm:GetParameter
+      Resource: "arn:aws:ssm:*:*:parameter/redenvelope/${opt:stage}/*"
+    - Effect: Allow
+      Action:
+        - sqs:DeleteMessage
+        - sqs:ReceiveMessage
+        - sqs:SendMessage
+        - sqs:GetQueueAttributes
+      Resource: arn:aws:sqs:*:*:${self:custom.sqs}
+    - Effect: Allow
+      Action:
+       - sdb:*
+      Resource: 
+        Fn::Join:
+          - ""
+          - - "arn:aws:sdb:*:*:domain/"
+            - Ref: redEnvelopeDb
+    - Effect: Allow
+      Action:
+       - KMS:Decrypt
+      Resource: ${self:custom.kmsKeyArn}
+
+responseMappings: &response_mappings
+  headers:
+    Content-Type: "'application/json'"
+  statusCodes:
+      200:
+          pattern: ''
+          headers:
+            Access-Control-Allow-Origin: "'*'"
+          template:
+            application/json: ""
+      400:
+          pattern: 'Bad Request: .*'
+          headers:
+            Access-Control-Allow-Origin: "'*'"
+          template:
+            application/json: ""
+      401:
+          pattern: 'Unauthorized: .*'
+          headers:
+            Access-Control-Allow-Origin: "'*'"
+          template:
+            application/json: ""
+      403:
+          pattern: 'Forbidden: .*'
+          headers:
+            Access-Control-Allow-Origin: "'*'"
+          template:
+            application/json: ""
+      404:
+          pattern: 'Not Found: .*'
+          headers:
+            Access-Control-Allow-Origin: "'*'"
+          template:
+            application/json: ""
+      500:
+          pattern: 'Error: .*'
+          headers:
+            Access-Control-Allow-Origin: "'*'"
+
+requestTemplate: &request_template
+  application/x-www-form-urlencoded: '
+  #set($allParams = $input.params())
+  {
+  "body": $input.json(''$''),
+  "params" : {
+  #foreach($type in $allParams.keySet())
+      #set($params = $allParams.get($type))
+  "$type" : {
+      #foreach($paramName in $params.keySet())
+      "$paramName" : "$util.escapeJavaScript($params.get($paramName))"
+          #if($foreach.hasNext),#end
+      #end
+  }
+      #if($foreach.hasNext),#end
+  #end
+  },
+  "context" : {
+    "http-method" : "$context.httpMethod",
+    "source-ip" : "$context.identity.sourceIp",
+    "user-agent" : "$context.identity.userAgent",
+    "resource-path" : "$context.resourcePath"
+  }
+  }'
+  application/json: '
+  #set($allParams = $input.params())
+  {
+  "body": $input.json(''$''),
+  "params" : {
+  #foreach($type in $allParams.keySet())
+      #set($params = $allParams.get($type))
+  "$type" : {
+      #foreach($paramName in $params.keySet())
+      "$paramName" : "$util.escapeJavaScript($params.get($paramName))"
+          #if($foreach.hasNext),#end
+      #end
+  }
+      #if($foreach.hasNext),#end
+  #end
+  },
+  "context" : {
+    "http-method" : "$context.httpMethod",
+    "source-ip" : "$context.identity.sourceIp",
+    "user-agent" : "$context.identity.userAgent",
+    "resource-path" : "$context.resourcePath"
+  }
+  }'
+
+functions:
+  queueRequests:
+    timeout: 3
+    handler: src/receiver.handler
+    name: redenvelope-${opt:stage}-queueRequests
+    environment:
+      REGION: ${self:custom.region}
+      QUEUE_NAME: ${self:custom.sqs}
+      PROVIDER_URL: ${env:PROVIDER_URL}
+      TABLE_NAME:
+        Ref: redEnvelopeDb
+      ENV: ${opt:stage}
+    events:
+      - http:
+          method: post
+          path: /fund
+          integration: lambda
+          cors: true
+          request:
+            passThrough: WHEN_NO_TEMPLATES
+            template: *request_template
+          response: *response_mappings
+      - http:
+          method: post
+          path: /claim
+          integration: lambda
+          cors: true
+          request:
+            passThrough: WHEN_NO_TEMPLATES
+            template: *request_template
+          response: *response_mappings
+  manageEnvelope:
+    timeout: 7
+    handler: src/sender.handler
+    name: redenvelope-${opt:stage}-manageEnvelope
+    reservedConcurrency: 1
+    environment:
+      PROVIDER_URL: ${env:PROVIDER_URL}
+      ENV: ${opt:stage}
+    events:
+      - sqs: 
+          arn:
+            Fn::GetAtt:
+            - envelopeRequests
+            - Arn
+
+plugins:
+  - serverless-offline
+
+resources:
+  Resources:
+    envelopeRequests:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.sqs}
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 60
+    redEnvelopeDb:
+      Type: "AWS::SDB::Domain"
+      Properties:
+        DomainName : ${self:custom.table}
+        Description: "SDB Domain to store metadata"
