@@ -8,11 +8,11 @@ Create required properties in [AWS parameter store](https://eu-west-1.console.aw
 
 ### Private key holding tokens on Plasma:
 
-1. Put your target env in the name (e.g. `/faucet/testnet/PRIV_KEY`)
+1. Put your target env in the name (e.g. `/redenvelope/testnet/PRIV_KEY`)
 2. Encrypt with KMS key
 
 ```
-"Name": "/faucet/<env>/PRIV_KEY",
+"Name": "/redenvelope/<env>/PRIV_KEY",
 "Type": "SecureString",
 ```
 
